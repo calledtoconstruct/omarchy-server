@@ -52,9 +52,9 @@ const canUse = (k, userId) => k.ownerUserId === userId || k.sharedWith.includes(
 export function createKeyStore({dataDir, now = () => Date.now()}) {
 	const file = join(dataDir, 'assistant', 'keys.json')
 	let state = {keys: []}
-	// Factory reset closes the store. A write already queued must see this when it runs, not the
-	// string it would have captured before the key list was cleared.
-	let closed = false
+	// Factory reset bumps this before it deletes. A write records the generation when it is queued
+	// and writes nothing if a reset has moved on, so the queued write cannot recreate the file.
+	let epoch = 0
 	const loaded = mkdir(join(dataDir, 'assistant'), {recursive: true, mode: 0o700})
 		.then(() => readFile(file, 'utf8'))
 		.then((t) => {
@@ -64,7 +64,10 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			for (const k of state.keys) if (k?.provider === 'openai-compatible' && k.baseUrl) k.baseUrl = normalizeBaseUrl(k.baseUrl)
 		})
 		.catch(() => {})
-	const save = () => writeAtomic(file, () => (closed ? null : JSON.stringify(state, null, '\t')), {mode: 0o600})
+	const save = () => {
+		const seen = epoch
+		return writeAtomic(file, () => (seen !== epoch ? null : JSON.stringify(state, null, '\t')), {mode: 0o600})
+	}
 	const find = (id) => state.keys.find((k) => k.id === id)
 
 	return {
@@ -164,10 +167,10 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			return find(id) ?? null
 		},
 		// Factory reset: the key list is empty in memory and the file is gone, so the next owner
-		// does not inherit these keys and a later save cannot write them back.
+		// does not inherit these keys. A write queued before this bump does not put the file back.
 		async reset() {
 			await loaded
-			closed = true
+			epoch++
 			state = {keys: []}
 			await removeAtomic(file)
 		},

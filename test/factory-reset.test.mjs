@@ -249,3 +249,35 @@ test('factory reset drops a key and a chat whose writes are still in flight', as
 		await rm(root, {recursive: true, force: true})
 	}
 })
+
+// Factory reset does not exit. The same key store and conversation store must accept the next owner's writes.
+test('the next owner can save a key and a chat after factory reset', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-reset-again-'))
+	const data = join(root, 'data')
+	await mkdir(data, {recursive: true})
+	const keys = createKeyStore({dataDir: data})
+	const conversations = createConversations({dataDir: data})
+	const keyFile = join(data, 'assistant/keys.json')
+	const convDir = join(data, 'assistant/conversations')
+	try {
+		await keys.add({userId: 'owner', role: 'owner'}, {provider: 'openai', apiKey: 'sk-old-secret', model: 'm', name: 'Old'})
+		const oldChat = await conversations.create('owner', {title: 'old-chat'})
+		await keys.reset()
+		await keys.add({userId: 'owner', role: 'owner'}, {provider: 'openai', apiKey: 'sk-new-secret', model: 'm', name: 'New'})
+		assert.equal(await exists(keyFile), true, 'keys.json exists after the next save')
+		const keyText = await readFile(keyFile, 'utf8')
+		assert.equal(keyText.includes('sk-new-secret'), true, 'the new secret is saved')
+		assert.equal(keyText.includes('sk-old-secret'), false, 'the old secret is not restored')
+		await conversations.reset()
+		const created = await conversations.create('owner', {title: 'next-chat'})
+		assert.notEqual(created.id, oldChat.id)
+		const chatFile = join(convDir, `${created.id}.json`)
+		assert.equal(await exists(chatFile), true, 'a conversation json exists after reset')
+		const chatText = await readFile(chatFile, 'utf8')
+		assert.equal(chatText.includes('next-chat'), true, 'the new chat is saved')
+		assert.equal(chatText.includes('old-chat'), false, 'the old chat is not restored')
+		assert.equal(await exists(join(convDir, `${oldChat.id}.json`)), false, 'the old chat file stays gone')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})

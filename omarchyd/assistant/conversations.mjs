@@ -55,8 +55,9 @@ function canReplace(current, next) {
 export function createConversations({dataDir, now = () => Date.now()}) {
 	const dir = join(dataDir, 'assistant', 'conversations')
 	const loaded = mkdir(dir, {recursive: true, mode: 0o700})
-	// Factory reset closes the store before deleting, so a write queued behind that delete does not recreate the chat.
-	let closed = false
+	// Factory reset bumps this before deleting. A write records the generation when it is queued
+	// and writes nothing if a reset has moved on, so the queued write cannot recreate the chat.
+	let epoch = 0
 	// Paths whose write has been queued but may not be renamed yet, so reset can delete them on that same queue.
 	const writing = new Set()
 	let dirReal = null
@@ -111,12 +112,13 @@ export function createConversations({dataDir, now = () => Date.now()}) {
 	}
 	async function writeRow(id, row) {
 		return withLock(id, async () => {
-			if (closed) return
+			// Taken before the path check awaits, so a reset in that gap still belongs to this write.
+			const seen = epoch
 			const file = await fileFor(id)
 			row.id = id
 			writing.add(file)
 			try {
-				await writeAtomic(file, () => (closed ? null : JSON.stringify(row, null, '\t')), {mode: 0o600})
+				await writeAtomic(file, () => (seen !== epoch ? null : JSON.stringify(row, null, '\t')), {mode: 0o600})
 			} finally {
 				writing.delete(file)
 			}
@@ -140,7 +142,7 @@ export function createConversations({dataDir, now = () => Date.now()}) {
 	return {
 		// Factory reset: every saved chat goes. The folder stays. A write already queued does not put the file back.
 		async reset() {
-			closed = true
+			epoch++
 			const base = await root()
 			const files = new Set(writing)
 			for (const name of await readdir(base).catch(() => [])) {
